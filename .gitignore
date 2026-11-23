@@ -1,0 +1,7 @@
+# Windows thumbnail cache
+Thumbs.db
+ehthumbs.db
+
+# Logs and temporary files
+*.log
+.DS_Store
