@@ -19,6 +19,9 @@
     <!-- Font Awesome Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 
+    <!-- Supabase JS Client v2 -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
     <script>
         tailwind.config = {
             theme: {
@@ -121,6 +124,10 @@
                             <span id="networkStatusBadge" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-400/20 text-emerald-200 border border-emerald-300/30">
                                 <span class="w-1.5 h-1.5 rounded-full bg-emerald-300 animate-pulse"></span>
                                 <span id="networkStatusText">Online</span>
+                            </span>
+                            <span id="cloudStatusBadge" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-400/20 text-sky-200 border border-sky-300/30" title="Connected to Supabase Cloud">
+                                <i class="fa-solid fa-cloud text-[9px]"></i>
+                                <span id="cloudStatusText">Cloud Live</span>
                             </span>
                         </div>
                         <p class="text-[11px] text-emerald-100/90 mt-0.5 flex items-center gap-1.5" id="liveClock">
@@ -574,6 +581,11 @@
                     
                     <!-- Export & Share Action Buttons -->
                     <div class="flex flex-wrap items-center gap-2">
+                        <!-- Cloud Sync Button -->
+                        <button onclick="syncWithSupabaseManual()" title="Sync with Supabase Cloud Database" class="px-3 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-xs transition">
+                            <i class="fa-solid fa-cloud-arrow-down text-sm"></i>
+                            <span id="btnSyncCloudText">Sync Cloud</span>
+                        </button>
                         <!-- WhatsApp Daily Summary -->
                         <button onclick="shareDailySummaryWhatsApp()" class="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-xs transition">
                             <i class="fa-brands fa-whatsapp text-sm"></i>
@@ -833,6 +845,163 @@
         let selectedProducts = new Set();
         let speechRecognition = null;
         let isDictating = false;
+
+        // ==============================================================
+        // SUPABASE CLOUD BACKEND INTEGRATION
+        // ==============================================================
+        const SUPABASE_URL = 'https://ubvjkbqbwaqbikmlqubl.supabase.co';
+        const SUPABASE_ANON_KEY = 'sb_publishable_3jmCmsdtsIru2GOWu4nebg_i-BaFBl3';
+        let supabaseClient = null;
+
+        try {
+            if (window.supabase && typeof window.supabase.createClient === 'function') {
+                supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+            }
+        } catch (e) {
+            console.warn('Supabase initialization note:', e);
+        }
+
+        function updateCloudBadge(status) {
+            const badge = document.getElementById('cloudStatusBadge');
+            const text = document.getElementById('cloudStatusText');
+            if (!badge || !text) return;
+
+            if (status === 'synced' || status === 'connected') {
+                badge.className = 'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-400/20 text-sky-200 border border-sky-300/30';
+                text.textContent = 'Cloud Live';
+            } else if (status === 'syncing') {
+                badge.className = 'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-400/20 text-amber-200 border border-amber-300/30';
+                text.textContent = 'Syncing...';
+            } else if (status === 'error') {
+                badge.className = 'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-400/20 text-rose-200 border border-rose-300/30';
+                text.textContent = 'Offline (Local)';
+            }
+        }
+
+        async function syncReportToSupabase(rep) {
+            if (!supabaseClient) return;
+            try {
+                updateCloudBadge('syncing');
+                const row = {
+                    id: rep.id,
+                    timestamp: rep.timestamp,
+                    staff_name: rep.staffName,
+                    staff_id: rep.staffId,
+                    client_name: rep.clientName,
+                    contact_person: rep.contactPerson,
+                    designation: rep.designation || null,
+                    phone: rep.phone,
+                    location: rep.location,
+                    category: rep.category || null,
+                    purpose: rep.purpose,
+                    mode: rep.mode || 'In-Person',
+                    products: rep.products || [],
+                    outcome: rep.outcome,
+                    deal_value: rep.dealValue || 0,
+                    win_probability: rep.winProbability || null,
+                    notes: rep.notes,
+                    next_follow_up_date: rep.nextFollowUpDate || null,
+                    next_action_plan: rep.nextActionPlan || null,
+                    gps: rep.gps || null,
+                    photo: rep.photo || null,
+                    is_sample: Boolean(rep.isSample)
+                };
+                const { error } = await supabaseClient.from('client_visit_reports').upsert(row);
+                if (error) {
+                    console.warn('Supabase upsert warning:', error.message);
+                    updateCloudBadge('error');
+                } else {
+                    updateCloudBadge('synced');
+                }
+            } catch (err) {
+                console.warn('Supabase sync error:', err);
+                updateCloudBadge('error');
+            }
+        }
+
+        async function deleteReportFromSupabase(id) {
+            if (!supabaseClient) return;
+            try {
+                await supabaseClient.from('client_visit_reports').delete().eq('id', id);
+            } catch (err) {
+                console.warn('Supabase delete error:', err);
+            }
+        }
+
+        async function fetchReportsFromSupabase(showNotification = false) {
+            if (!supabaseClient) return;
+            try {
+                updateCloudBadge('syncing');
+                const { data, error } = await supabaseClient
+                    .from('client_visit_reports')
+                    .select('*')
+                    .order('timestamp', { ascending: false });
+
+                if (!error && data && data.length > 0) {
+                    const cloudReports = data.map(row => ({
+                        id: row.id,
+                        timestamp: row.timestamp,
+                        staffName: row.staff_name,
+                        staffId: row.staff_id,
+                        clientName: row.client_name,
+                        contactPerson: row.contact_person,
+                        designation: row.designation,
+                        phone: row.phone,
+                        location: row.location,
+                        category: row.category,
+                        purpose: row.purpose,
+                        mode: row.mode,
+                        products: row.products || [],
+                        outcome: row.outcome,
+                        dealValue: row.deal_value,
+                        winProbability: row.win_probability,
+                        notes: row.notes,
+                        nextFollowUpDate: row.next_follow_up_date,
+                        nextActionPlan: row.next_action_plan,
+                        gps: row.gps,
+                        photo: row.photo,
+                        isSample: row.is_sample
+                    }));
+
+                    const reportMap = new Map();
+                    // Keep non-sample cloud reports or local reports
+                    reports.forEach(r => reportMap.set(r.id, r));
+                    cloudReports.forEach(r => reportMap.set(r.id, r));
+                    reports = Array.from(reportMap.values()).sort((a,b) => new Date(b.timestamp) - new Date(a.timestamp));
+                    
+                    saveReportsToStorage();
+                    updateStats();
+                    renderReports();
+                    renderAnalytics();
+                    updateClientsDatalist();
+                    updateCloudBadge('synced');
+                    if (showNotification) {
+                        showToast(`Cloud sync complete! ${cloudReports.length} reports synced.`, 'success');
+                    }
+                } else {
+                    updateCloudBadge('connected');
+                    if (showNotification) {
+                        showToast('Cloud database connected.', 'info');
+                    }
+                }
+            } catch (e) {
+                console.warn('Supabase fetch error:', e);
+                updateCloudBadge('error');
+            }
+        }
+
+        async function syncWithSupabaseManual() {
+            const btnText = document.getElementById('btnSyncCloudText');
+            if (btnText) btnText.textContent = 'Syncing...';
+            // First push any local unsynced reports to cloud
+            if (supabaseClient && reports.length > 0) {
+                for (const rep of reports.slice(0, 15)) {
+                    await syncReportToSupabase(rep);
+                }
+            }
+            await fetchReportsFromSupabase(true);
+            if (btnText) btnText.textContent = 'Sync Cloud';
+        }
 
         // Translation Dictionary (English & Malayalam)
         const i18n = {
@@ -1129,6 +1298,7 @@
             renderReports();
             renderAnalytics();
             updateClientsDatalist();
+            fetchReportsFromSupabase();
         });
 
         // ==============================================================
@@ -1637,6 +1807,7 @@
 
             reports.unshift(newReport);
             saveReportsToStorage();
+            syncReportToSupabase(newReport);
             clearDraft();
 
             resetVisitForm();
@@ -1733,6 +1904,7 @@
             if (confirm('Delete this visit report?')) {
                 reports = reports.filter(r => r.id !== id);
                 saveReportsToStorage();
+                deleteReportFromSupabase(id);
                 closeDetailModal();
                 updateStats();
                 renderReports();
